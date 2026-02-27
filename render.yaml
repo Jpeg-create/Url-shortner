@@ -1,0 +1,22 @@
+# ============================================================
+# render.yaml
+#
+# This tells Render how to deploy your service.
+# Commit this file to your repo root.
+# ============================================================
+
+services:
+  - type: web
+    name: url-shortener
+    runtime: docker           # Use our Dockerfile
+    plan: free
+    healthCheckPath: /health  # Render pings this to confirm startup
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false           # You'll paste this from Neon dashboard
+      - key: REDIS_URL
+        sync: false           # You'll paste this from Upstash dashboard
+      - key: BASE_URL
+        sync: false           # Your Render URL e.g. https://url-shortener.onrender.com

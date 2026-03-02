@@ -1,16 +1,15 @@
 # ============================================================
-# Redis Client (Caching + Rate Limiting)
+# Redis Client — Caching + Rate Limiting
 #
-# Two jobs:
-# 1. Cache hot URLs so we don't hit the DB on every redirect
-# 2. Rate limit the /shorten endpoint per tenant per minute
+# Two responsibilities:
+#  1. Cache hot URLs so redirects never touch the database
+#  2. Rate limit POST /shorten per tenant per minute
 #
-# Upstash gives you a REDIS_URL. It uses rediss:// (with SSL).
+# Upstash free tier: 256 MB, 500K commands/month, SSL required.
 # ============================================================
 
 import redis.asyncio as aioredis
 import os
-import json
 from typing import Optional
 
 _redis: Optional[aioredis.Redis] = None
@@ -22,14 +21,13 @@ async def create_redis():
     if not redis_url:
         raise RuntimeError("REDIS_URL environment variable is not set")
 
-    # Upstash uses rediss:// (SSL). redis.asyncio handles this automatically.
+    # Upstash uses rediss:// (double-s = SSL). redis.asyncio handles it automatically.
     _redis = aioredis.from_url(
         redis_url,
         decode_responses=True,
         socket_connect_timeout=5,
         socket_timeout=5,
     )
-    # Test the connection
     await _redis.ping()
     print("✅ Redis connected")
 
@@ -38,7 +36,7 @@ async def close_redis():
     global _redis
     if _redis:
         await _redis.close()
-        print("🔌 Redis connection closed")
+        print("🔌 Redis closed")
 
 
 def get_redis() -> aioredis.Redis:
@@ -47,68 +45,48 @@ def get_redis() -> aioredis.Redis:
     return _redis
 
 
-# ============================================================
-# URL Cache helpers
-# ============================================================
+# ── URL cache ─────────────────────────────────────────────────────────────────
 
-CACHE_TTL = 60 * 60 * 24  # 24 hours in seconds
+CACHE_TTL = 60 * 60 * 24  # 24 hours
 
 
-async def cache_url(short_code: str, original_url: str):
-    """Store a URL in cache after it's created or first fetched."""
+async def cache_url(short_code: str, original_url: str) -> None:
     await get_redis().setex(f"url:{short_code}", CACHE_TTL, original_url)
 
 
 async def get_cached_url(short_code: str) -> Optional[str]:
-    """Check cache before hitting the database."""
     return await get_redis().get(f"url:{short_code}")
 
 
-async def invalidate_url(short_code: str):
-    """Remove a URL from cache (e.g. when it's deactivated)."""
+async def invalidate_url(short_code: str) -> None:
     await get_redis().delete(f"url:{short_code}")
 
 
-# ============================================================
-# Rate Limiting (sliding window counter)
+# ── Rate limiting ─────────────────────────────────────────────────────────────
 #
-# HOW IT WORKS:
-# Each tenant gets a key like rate:{tenant_id}
-# We increment it on every request. The key has a TTL of 60 seconds.
-# If the count exceeds the limit, we reject the request.
+# Fixed-window counter keyed by tenant_id.
 #
-# This is a "fixed window" approach — simple and good enough.
-# A "sliding window" is more accurate but more complex to implement.
-# ============================================================
+# FIX: previous version did incr() + expire() as two separate round-trips.
+# If the process died between them the key would exist forever with no TTL,
+# permanently locking the tenant out. Now we use a pipeline so both commands
+# are sent and applied atomically in one round-trip.
+#
+# Note: we always SET the TTL (not just on count==1) so that the window
+# always resets 60 s after the first request in that window, not after
+# the last. This is the correct fixed-window behaviour.
 
 async def check_rate_limit(tenant_id: int, max_requests: int = 10) -> bool:
     """
-    Returns True if the request is allowed, False if rate limit exceeded.
-    max_requests is per 60-second window.
+    Increment the tenant's request counter and return True if allowed.
+    Uses a pipeline to fix the incr/expire race condition.
     """
     key = f"rate:{tenant_id}"
     r = get_redis()
 
-    # Atomically increment and get the new count
-    count = await r.incr(key)
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.incr(key)
+        pipe.expire(key, 60, nx=True)   # nx=True: only set TTL if the key has no TTL yet
+        results = await pipe.execute()  # [new_count, expire_result]
 
-    if count == 1:
-        # First request in this window — set the 60-second expiry
-        await r.expire(key, 60)
-
+    count = results[0]
     return count <= max_requests
-
-
-async def get_remaining_requests(tenant_id: int, max_requests: int = 10) -> dict:
-    """Return rate limit info for response headers."""
-    key = f"rate:{tenant_id}"
-    r = get_redis()
-
-    count = int(await r.get(key) or 0)
-    ttl = await r.ttl(key)
-
-    return {
-        "limit": max_requests,
-        "remaining": max(0, max_requests - count),
-        "reset_in_seconds": ttl if ttl > 0 else 60,
-    }

@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import os
 
 from app.database import create_pool, close_pool
 from app.redis_client import create_redis, close_redis
@@ -30,10 +29,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:5500",   # Live Server (VS Code)
+        # Add your Vercel / Netlify URL here once deployed, e.g.:
+        # "https://mikralink.vercel.app",
+    ],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # ── Fixed routes MUST be registered before the wildcard router ────────────────

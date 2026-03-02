@@ -46,7 +46,7 @@ async def get_current_tenant(
         FROM api_keys ak
         JOIN tenants  t  ON t.id = ak.tenant_id
         WHERE ak.key_hash = $1
-          AND ak.expires_at IS NULL OR ak.expires_at > NOW()
+          AND (ak.expires_at IS NULL OR ak.expires_at > NOW())
         """,
         key_hash,
     )

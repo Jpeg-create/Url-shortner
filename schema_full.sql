@@ -77,7 +77,9 @@ BEGIN
     END IF;
 END$$;
 
-CREATE INDEX IF NOT EXISTS idx_urls_tenant_id ON urls(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_urls_tenant_id        ON urls(tenant_id);
+-- Composite index covers: WHERE tenant_id = $1 AND is_active = TRUE (quota check + list)
+CREATE INDEX IF NOT EXISTS idx_urls_tenant_active     ON urls(tenant_id, is_active);
 
 -- ── Plan limits ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS plan_limits (

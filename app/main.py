@@ -27,19 +27,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: allow all origins.
+# This API is protected by API key authentication — CORS restriction adds no
+# security here. Any domain can call the API, but cannot do anything useful
+# without a valid sk_live_... key. Wildcard is the correct setting.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # ── Production frontend ───────────────────────────────
-        "https://mikralink.vercel.app",
-        # ── Local development ────────────────────────────────
-        "http://localhost:3000",
-        "http://localhost:8080",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-    ],
-    # Covers Vercel preview URLs like mikralink-git-main-xxx.vercel.app
-    allow_origin_regex=r"https://mikralink.*\.vercel\.app",
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Guest-Token"],
@@ -47,9 +41,6 @@ app.add_middleware(
 
 
 # ── Fixed routes MUST be registered before the wildcard router ────────────────
-# If urls_router is included first, its /{short_code} wildcard catches
-# /health and / before these handlers ever get a chance to run.
-
 @app.get("/health", tags=["system"])
 async def health_check():
     return {"status": "ok", "service": "url-shortener"}
@@ -66,5 +57,5 @@ async def root():
 
 
 # ── Routers registered AFTER the fixed routes ─────────────────────────────────
-app.include_router(tenants_router)  # /tenants/... — no wildcards, safe either way
-app.include_router(urls_router)     # contains /{short_code} wildcard — must be last
+app.include_router(tenants_router)
+app.include_router(urls_router)

@@ -118,7 +118,7 @@ async def shorten_url_guest(body: ShortenRequest, request: Request):
         RETURNING id
         """,
         temp_code,
-        body.original_url,
+        body.url,
     )
 
     # ── 4. Generate real short code and update ────────────────────────────────
@@ -130,7 +130,7 @@ async def shorten_url_guest(body: ShortenRequest, request: Request):
     )
 
     # ── 5. Warm cache ─────────────────────────────────────────────────────────
-    await cache_url(short_code, body.original_url)
+    await cache_url(short_code, body.url)
 
     # ── 6. Increment counter only now — after confirmed success ───────────────
     updated = await increment_guest_count(guest_token)
@@ -138,7 +138,7 @@ async def shorten_url_guest(body: ShortenRequest, request: Request):
     return GuestShortenResponse(
         short_code=short_code,
         short_url=f"{_BASE_URL}/{short_code}",
-        original_url=body.original_url,
+        original_url=body.url,
         uses_remaining=updated["uses_remaining"],
         uses_used=updated["uses_used"],
     )
@@ -208,7 +208,7 @@ async def shorten_url(
         RETURNING id
         """,
         temp_code,
-        body.original_url,
+        body.url,
         tenant["id"],
         expires_at,
     )
@@ -222,12 +222,12 @@ async def shorten_url(
     )
 
     # ── 7. Warm the cache ─────────────────────────────────────────────────────
-    await cache_url(short_code, body.original_url)
+    await cache_url(short_code, body.url)
 
     return ShortenResponse(
         short_code=short_code,
         short_url=f"{_BASE_URL}/{short_code}",   
-        original_url=body.original_url,
+        original_url=body.url,
     )
 
 

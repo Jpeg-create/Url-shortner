@@ -402,10 +402,10 @@ async def reset_guest_limit(request: Request):
     if env == "production":
         raise HTTPException(status_code=404, detail="Not found")
 
-    ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else "unknown")
-    )
+    # BUG FIX: guest limit is now tracked by UUID token (not IP).
+    # The old code deleted guest:{ip} which never matched anything after
+    # the switch to token-based tracking.
+    guest_token = request.headers.get("x-guest-token", "").strip() or "anonymous"
     from app.redis_client import get_redis
-    await get_redis().delete(f"guest:{ip}")
-    return {"message": f"Guest limit reset for {ip}"}
+    await get_redis().delete(f"guest:{guest_token}")
+    return {"message": f"Guest limit reset for token {guest_token[:8]}..."}

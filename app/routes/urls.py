@@ -24,7 +24,7 @@ from pydantic import BaseModel, field_validator
 
 from app.database import fetch_one, fetch_all, execute, fetch_val
 from app.base62 import encode
-from app.redis_client import cache_url, get_cached_url, invalidate_url, check_rate_limit, check_guest_limit
+from app.redis_client import cache_url, get_cached_url, invalidate_url, check_rate_limit, check_guest_limit, increment_guest_count
 from app.middleware.auth import get_current_tenant
 from app.worker.analytics import record_click
 
@@ -129,12 +129,15 @@ async def shorten_url_guest(body: ShortenRequest, request: Request):
     # ── 5. Warm cache ─────────────────────────────────────────────────────────
     await cache_url(short_code, body.original_url)
 
+    # ── 6. Increment counter only now — after confirmed success ───────────────
+    updated = await increment_guest_count(ip)
+
     return GuestShortenResponse(
         short_code=short_code,
         short_url=f"{_BASE_URL}/{short_code}",
         original_url=body.original_url,
-        uses_remaining=limit["uses_remaining"],
-        uses_used=limit["uses_used"],
+        uses_remaining=updated["uses_remaining"],
+        uses_used=updated["uses_used"],
     )
 
 
@@ -384,3 +387,22 @@ async def redirect_url(short_code: str, request: Request):
     )
 
     return response
+
+
+# ── DELETE /shorten/guest/reset — dev helper ──────────────────────────────────
+# Clears the guest counter for the caller's IP.
+# Only works in non-production environments.
+
+@router.delete("/shorten/guest/reset")
+async def reset_guest_limit(request: Request):
+    env = os.getenv("ENV", "development")
+    if env == "production":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    from app.redis_client import get_redis
+    await get_redis().delete(f"guest:{ip}")
+    return {"message": f"Guest limit reset for {ip}"}

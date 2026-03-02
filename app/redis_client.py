@@ -81,11 +81,24 @@ GUEST_TTL   = 60 * 60 * 24  # 24 hours
 
 async def check_guest_limit(ip: str) -> dict:
     """
-    Track guest uses by IP address. Returns:
-      { "allowed": bool, "uses_remaining": int, "uses_used": int }
+    PEEK only — reads current count without incrementing.
+    Call increment_guest_count() only after a successful shorten,
+    so failed/errored requests never burn through the free quota.
+    """
+    key   = f"guest:{ip}"
+    count = await get_redis().get(key)
+    count = int(count) if count else 0
+    remaining = max(0, GUEST_LIMIT - count)
+    return {
+        "allowed":        count < GUEST_LIMIT,
+        "uses_used":      count,
+        "uses_remaining": remaining,
+    }
 
-    5 uses per IP per 24 hours. Counter expires after 24h so the
-    window resets daily — not a sliding window, just a simple daily bucket.
+
+async def increment_guest_count(ip: str) -> dict:
+    """
+    Increment the guest counter only on a successful shorten.
     """
     key = f"guest:{ip}"
     r   = get_redis()
@@ -95,7 +108,7 @@ async def check_guest_limit(ip: str) -> dict:
         pipe.expire(key, GUEST_TTL, nx=True)
         results = await pipe.execute()
 
-    count = results[0]
+    count     = results[0]
     remaining = max(0, GUEST_LIMIT - count)
     return {
         "allowed":        count <= GUEST_LIMIT,

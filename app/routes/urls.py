@@ -24,7 +24,7 @@ from pydantic import BaseModel, field_validator
 
 from app.database import fetch_one, fetch_all, execute, fetch_val
 from app.base62 import encode
-from app.redis_client import cache_url, get_cached_url, invalidate_url, check_rate_limit
+from app.redis_client import cache_url, get_cached_url, invalidate_url, check_rate_limit, check_guest_limit
 from app.middleware.auth import get_current_tenant
 from app.worker.analytics import record_click
 
@@ -68,6 +68,74 @@ class ShortenResponse(BaseModel):
     short_code:   str
     short_url:    str
     original_url: str
+
+
+# ── POST /shorten/guest ───────────────────────────────────────────────────────
+# Public endpoint — no API key required.
+# 5 uses per IP per 24 hours, tracked in Redis.
+# URLs stored with tenant_id = NULL.
+
+class GuestShortenResponse(BaseModel):
+    short_code:     str
+    short_url:      str
+    original_url:   str
+    uses_remaining: int
+    uses_used:      int
+
+
+@router.post("/shorten/guest", response_model=GuestShortenResponse, status_code=201)
+async def shorten_url_guest(body: ShortenRequest, request: Request):
+    # ── 1. Identify client IP ─────────────────────────────────────────────────
+    ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else None)
+        or "unknown"
+    )
+
+    # ── 2. Check guest limit (5 per IP per 24h) ───────────────────────────────
+    limit = await check_guest_limit(ip)
+    if not limit["allowed"]:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Free limit reached. Create a free account to continue.",
+                "uses_used": limit["uses_used"],
+                "uses_remaining": 0,
+                "signup_required": True,
+            },
+        )
+
+    # ── 3. Insert with unique temp placeholder ────────────────────────────────
+    temp_code = f"t{uuid.uuid4().hex[:15]}"
+
+    url_id = await fetch_val(
+        """
+        INSERT INTO urls (short_code, original_url, tenant_id, expires_at)
+        VALUES ($1, $2, NULL, NULL)
+        RETURNING id
+        """,
+        temp_code,
+        body.original_url,
+    )
+
+    # ── 4. Generate real short code and update ────────────────────────────────
+    short_code = encode(url_id)
+    await execute(
+        "UPDATE urls SET short_code = $1 WHERE id = $2",
+        short_code,
+        url_id,
+    )
+
+    # ── 5. Warm cache ─────────────────────────────────────────────────────────
+    await cache_url(short_code, body.original_url)
+
+    return GuestShortenResponse(
+        short_code=short_code,
+        short_url=f"{_BASE_URL}/{short_code}",
+        original_url=body.original_url,
+        uses_remaining=limit["uses_remaining"],
+        uses_used=limit["uses_used"],
+    )
 
 
 # ── POST /shorten ─────────────────────────────────────────────────────────────

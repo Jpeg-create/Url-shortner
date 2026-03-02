@@ -75,6 +75,35 @@ async def invalidate_url(short_code: str) -> None:
 # always resets 60 s after the first request in that window, not after
 # the last. This is the correct fixed-window behaviour.
 
+GUEST_LIMIT = 5
+GUEST_TTL   = 60 * 60 * 24  # 24 hours
+
+
+async def check_guest_limit(ip: str) -> dict:
+    """
+    Track guest uses by IP address. Returns:
+      { "allowed": bool, "uses_remaining": int, "uses_used": int }
+
+    5 uses per IP per 24 hours. Counter expires after 24h so the
+    window resets daily — not a sliding window, just a simple daily bucket.
+    """
+    key = f"guest:{ip}"
+    r   = get_redis()
+
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.incr(key)
+        pipe.expire(key, GUEST_TTL, nx=True)
+        results = await pipe.execute()
+
+    count = results[0]
+    remaining = max(0, GUEST_LIMIT - count)
+    return {
+        "allowed":        count <= GUEST_LIMIT,
+        "uses_used":      count,
+        "uses_remaining": remaining,
+    }
+
+
 async def check_rate_limit(tenant_id: int, max_requests: int = 10) -> bool:
     """
     Increment the tenant's request counter and return True if allowed.

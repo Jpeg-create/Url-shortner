@@ -85,15 +85,18 @@ class GuestShortenResponse(BaseModel):
 
 @router.post("/shorten/guest", response_model=GuestShortenResponse, status_code=201)
 async def shorten_url_guest(body: ShortenRequest, request: Request):
-    # ── 1. Identify client IP ─────────────────────────────────────────────────
-    ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else None)
-        or "unknown"
+    # ── 1. Identify guest by UUID token (sent from frontend localStorage) ─────
+    # Previously used IP address — caused all users behind the same IP (shared
+    # offices, mobile carriers, incognito windows) to share one quota bucket.
+    # Now uses a UUID the browser generates once and stores in localStorage.
+    # Incognito = fresh localStorage = fresh token = fresh 5-use quota.
+    guest_token = (
+        request.headers.get("x-guest-token", "").strip()
+        or "anonymous"
     )
 
-    # ── 2. Check guest limit (5 per IP per 24h) ───────────────────────────────
-    limit = await check_guest_limit(ip)
+    # ── 2. Check guest limit (5 per token per 24h) ────────────────────────────
+    limit = await check_guest_limit(guest_token)
     if not limit["allowed"]:
         raise HTTPException(
             status_code=429,
@@ -130,7 +133,7 @@ async def shorten_url_guest(body: ShortenRequest, request: Request):
     await cache_url(short_code, body.original_url)
 
     # ── 6. Increment counter only now — after confirmed success ───────────────
-    updated = await increment_guest_count(ip)
+    updated = await increment_guest_count(guest_token)
 
     return GuestShortenResponse(
         short_code=short_code,

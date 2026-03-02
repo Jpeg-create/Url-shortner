@@ -42,7 +42,7 @@ app.add_middleware(
     allow_origin_regex=r"https://mikralink.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Guest-Token"],
 )
 
 

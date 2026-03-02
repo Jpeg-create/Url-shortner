@@ -21,7 +21,6 @@ async def create_redis():
     if not redis_url:
         raise RuntimeError("REDIS_URL environment variable is not set")
 
-    # Upstash uses rediss:// (double-s = SSL). redis.asyncio handles it automatically.
     _redis = aioredis.from_url(
         redis_url,
         decode_responses=True,
@@ -62,30 +61,44 @@ async def invalidate_url(short_code: str) -> None:
     await get_redis().delete(f"url:{short_code}")
 
 
-# ── Rate limiting ─────────────────────────────────────────────────────────────
+# ── Guest rate limiting ───────────────────────────────────────────────────────
 #
-# Fixed-window counter keyed by tenant_id.
+# PREVIOUS BUG: keyed by IP address.
+# Problem: incognito windows share the same IP — fresh browser session still
+# hit the same counter. Worse: users behind shared IPs (offices, mobile NAT)
+# would all share one 5-use bucket, effectively locking everyone out after
+# the first person used their quota.
 #
-# FIX: previous version did incr() + expire() as two separate round-trips.
-# If the process died between them the key would exist forever with no TTL,
-# permanently locking the tenant out. Now we use a pipeline so both commands
-# are sent and applied atomically in one round-trip.
+# FIX: keyed by a UUID the frontend generates and stores in localStorage.
+# - Incognito = empty localStorage = new UUID = fresh 5 uses ✓
+# - Different devices = different UUIDs ✓
+# - Abuse-resistant enough for a portfolio project ✓
 #
-# Note: we always SET the TTL (not just on count==1) so that the window
-# always resets 60 s after the first request in that window, not after
-# the last. This is the correct fixed-window behaviour.
+# The frontend sends the token as the X-Guest-Token header.
+# The backend uses it as the Redis key (sanitised to prevent injection).
 
 GUEST_LIMIT = 5
-GUEST_TTL   = 60 * 60 * 24  # 24 hours
+GUEST_TTL   = 60 * 60 * 24  # 24 hours — resets after 24h of first use
 
 
-async def check_guest_limit(ip: str) -> dict:
+def _guest_key(token: str) -> str:
+    """
+    Sanitise the token and build the Redis key.
+    We only allow alphanumeric + hyphens (UUID format) — nothing else.
+    Max 64 chars to prevent oversized keys.
+    """
+    safe = "".join(c for c in token if c.isalnum() or c == "-")[:64]
+    if not safe:
+        safe = "anonymous"
+    return f"guest_token:{safe}"
+
+
+async def check_guest_limit(token: str) -> dict:
     """
     PEEK only — reads current count without incrementing.
-    Call increment_guest_count() only after a successful shorten,
-    so failed/errored requests never burn through the free quota.
+    Call increment_guest_count() only after a confirmed successful shorten.
     """
-    key   = f"guest:{ip}"
+    key   = _guest_key(token)
     count = await get_redis().get(key)
     count = int(count) if count else 0
     remaining = max(0, GUEST_LIMIT - count)
@@ -96,11 +109,12 @@ async def check_guest_limit(ip: str) -> dict:
     }
 
 
-async def increment_guest_count(ip: str) -> dict:
+async def increment_guest_count(token: str) -> dict:
     """
     Increment the guest counter only on a successful shorten.
+    Uses pipeline so incr + expire are sent atomically.
     """
-    key = f"guest:{ip}"
+    key = _guest_key(token)
     r   = get_redis()
 
     async with r.pipeline(transaction=False) as pipe:
@@ -117,18 +131,20 @@ async def increment_guest_count(ip: str) -> dict:
     }
 
 
+# ── Tenant rate limiting ──────────────────────────────────────────────────────
+
 async def check_rate_limit(tenant_id: int, max_requests: int = 10) -> bool:
     """
     Increment the tenant's request counter and return True if allowed.
-    Uses a pipeline to fix the incr/expire race condition.
+    Uses a pipeline to prevent the incr/expire race condition.
     """
     key = f"rate:{tenant_id}"
-    r = get_redis()
+    r   = get_redis()
 
     async with r.pipeline(transaction=False) as pipe:
         pipe.incr(key)
-        pipe.expire(key, 60, nx=True)   # nx=True: only set TTL if the key has no TTL yet
-        results = await pipe.execute()  # [new_count, expire_result]
+        pipe.expire(key, 60, nx=True)
+        results = await pipe.execute()
 
     count = results[0]
     return count <= max_requests
